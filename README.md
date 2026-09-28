@@ -1,6 +1,6 @@
-# Northstar Portfolio Analyzer
+# My Finances
 
-A prototype for an individual investor to understand allocation, performance, income, and risk in one place.
+A prototype for an individual to understand there financial position and ways to improve and reach financial goals
 
 ## Stack
 
