@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Area, AreaChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { useRouter } from "next/navigation";
+import {
+  AllocationPanel,
+  HoldingsTable,
+  MetricCard,
+  money,
+  PerformancePanel,
+  Sidebar
+} from "./components/PortfolioDashboard";
 
 const fallbackPortfolio = {
   owner: "Alex Morgan",
@@ -28,49 +36,172 @@ const fallbackPortfolio = {
   ]
 };
 
-const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-
-function Metric({ label, value, detail, positive }) {
-  return <article className="metric-card"><p>{label}</p><strong>{value}</strong><span className={positive === false ? "negative" : positive ? "positive" : ""}>{detail}</span></article>;
-}
-
-export default function Dashboard() {
+export default function Dashboard({ startJoined = false }) {
+  const router = useRouter();
   const [portfolio, setPortfolio] = useState(fallbackPortfolio);
   const [activeTab, setActiveTab] = useState("Overview");
   const [range, setRange] = useState("1Y");
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [hasJoined, setHasJoined] = useState(startJoined);
+  const [formError, setFormError] = useState("");
+  const [isSavingHolding, setIsSavingHolding] = useState(false);
+  const [quoteStatus, setQuoteStatus] = useState("Loading quotes…");
 
   useEffect(() => {
-    fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000"}/api/portfolio`)
+    fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000"}/api/portfolio`, { headers: { "x-user-id": window.localStorage.getItem("userId") || "default" } })
       .then((res) => res.ok ? res.json() : Promise.reject())
       .then(setPortfolio)
       .catch(() => {});
   }, []);
 
-  const invested = useMemo(() => portfolio.holdings.reduce((sum, holding) => sum + holding.shares * holding.price, 0), [portfolio]);
+  const symbols = portfolio.holdings.map((holding) => holding.symbol).join(",");
+  useEffect(() => {
+    let isCurrent = true;
+    async function refreshQuotes() {
+      try {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000"}/api/quotes?symbols=${encodeURIComponent(symbols)}`);
+        if (!response.ok) throw new Error("Live quotes unavailable");
+        const { quotes } = await response.json();
+        if (!isCurrent) return;
+        setPortfolio((current) => {
+          const holdings = current.holdings.map((holding) => {
+            const quote = quotes[holding.symbol];
+            return quote ? { ...holding, price: quote.price, change: quote.change } : holding;
+          });
+          const valueChange = holdings.reduce((change, holding, index) =>
+            change + (holding.price - current.holdings[index].price) * holding.shares, 0);
+          const holdingsValue = holdings.reduce((sum, holding) => sum + holding.price * holding.shares, 0);
+          return {
+            ...current,
+            holdings: holdings.map((holding) => ({
+              ...holding,
+              allocation: holdingsValue ? Number((holding.price * holding.shares / holdingsValue * 100).toFixed(1)) : 0
+            })),
+            totalValue: current.totalValue + valueChange
+          };
+        });
+        setQuoteStatus(`Live prices · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
+      } catch {
+        if (isCurrent) setQuoteStatus("Live quotes unavailable");
+      }
+    }
 
-  return <main className="shell">
-    <aside className="sidebar">
-      <div className="brand"><i>✦</i><span>northstar</span></div>
-      <nav>{["Overview", "Holdings", "Activity", "Insights"].map(item => <button key={item} onClick={() => setActiveTab(item)} className={activeTab === item ? "active" : ""}><b>{item === "Overview" ? "⌂" : item === "Holdings" ? "◈" : item === "Activity" ? "↗" : "◌"}</b>{item}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="avatar">AM</div><div><strong>{portfolio.owner}</strong><small>Individual account</small></div><span>⌄</span></div>
-    </aside>
+    refreshQuotes();
+    const interval = setInterval(refreshQuotes, 60_000);
+    return () => { isCurrent = false; clearInterval(interval); };
+  }, [symbols]);
 
-    <section className="content">
-      <header><div><p className="eyebrow">WELCOME BACK</p><h1>Good morning, {portfolio.owner.split(" ")[0]}.</h1><p className="subhead">Here’s how your money is working for you.</p></div><button className="add-button">＋ Add transaction</button></header>
-      <div className="tabs"><button className="selected">{activeTab}</button><span>Updated just now <i /></span></div>
-      <section className="metrics">
-        <Metric label="Portfolio value" value={money.format(portfolio.totalValue)} detail={`↑ ${money.format(portfolio.dailyChange)} today`} positive />
-        <Metric label="Total return" value={`+${portfolio.returns}%`} detail="Since inception" positive />
-        <Metric label="Dividend yield" value={`${portfolio.dividendYield}%`} detail="Est. $2,367 / year" />
-        <Metric label="Risk profile" value={portfolio.riskScore} detail="Well balanced" />
+  const invested = useMemo(
+    () => portfolio.holdings.reduce((sum, holding) => sum + holding.shares * holding.price, 0),
+    [portfolio]
+  );
+
+  async function addHolding(event) {
+    event.preventDefault();
+    if (isSavingHolding) return;
+    const form = new FormData(event.currentTarget);
+    const symbol = String(form.get("symbol")).trim().toUpperCase();
+    const holding = { symbol, averagePrice: Number(form.get("averagePrice")), shares: Number(form.get("shares")) };
+    setFormError("");
+    setIsSavingHolding(true);
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000"}/api/holdings`, { method: "POST", headers: { "Content-Type": "application/json", "x-user-id": window.localStorage.getItem("userId") || "default" }, body: JSON.stringify(holding) });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.error || "Could not save holding.");
+      }
+      setPortfolio(await response.json());
+      setShowAddForm(false);
+    } catch (error) {
+      if (error.message !== "Failed to fetch") {
+        setFormError(error.message || "Could not save holding.");
+        return;
+      }
+      // Keep the dashboard usable when the optional API server is offline.
+      // The average buy price is the best available price until a live quote arrives.
+      setPortfolio((current) => {
+        const existing = current.holdings.find((item) => item.symbol === symbol);
+        const holdings = existing
+          ? current.holdings.map((item) => item.symbol !== symbol ? item : {
+              ...item,
+              shares: item.shares + holding.shares,
+              averagePrice: (((item.averagePrice ?? item.price) * item.shares) + holding.averagePrice * holding.shares) / (item.shares + holding.shares),
+              price: (((item.averagePrice ?? item.price) * item.shares) + holding.averagePrice * holding.shares) / (item.shares + holding.shares)
+            })
+          : [...current.holdings, { symbol, name: symbol, shares: holding.shares, price: holding.averagePrice, averagePrice: holding.averagePrice, change: 0, allocation: 0 }];
+        const value = holdings.reduce((sum, item) => sum + item.price * item.shares, 0);
+        return {
+          ...current,
+          totalValue: current.totalValue + holding.averagePrice * holding.shares,
+          holdings: holdings.map((item) => ({ ...item, allocation: value ? Number((item.price * item.shares / value * 100).toFixed(1)) : 0 }))
+        };
+      });
+      setShowAddForm(false);
+    } finally {
+      setIsSavingHolding(false);
+    }
+  }
+
+  if (!hasJoined) {
+    return (
+      <main className="landing-page">
+        <div className="landing-orb landing-orb-one" />
+        <div className="landing-orb landing-orb-two" />
+        <nav className="landing-nav" aria-label="Main navigation">
+          <a className="landing-brand" href="#top"><i>✦</i> My Finances </a>
+          <span>Invest with clarity</span>
+        </nav>
+        <section className="landing-hero" id="top">
+          <p className="landing-eyebrow">YOUR FINANCIAL COMPASS</p>
+          <h1>See where your<br /><em>money can go.</em></h1>
+          <p className="landing-copy">A calm, clear home for every investment decision you make.</p>
+          <button className="join-button" type="button" onClick={() => router.push("/signup")}>Control Your Finances <span>→</span></button>
+          {/* <p className="landing-note">Start building your portfolio today</p> */}
+        </section>
+        <div className="landing-stats" aria-label="Platform highlights">
+          {/* <div><strong>$2.4B</strong><span>assets tracked</span></div>
+          <div><strong>48k</strong><span>investors growing</span></div>
+          <div><strong>4.9/5</strong><span>member rating</span></div> */}
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="shell">
+      <Sidebar owner={portfolio.owner} activeTab={activeTab} onTabChange={setActiveTab}/>
+      <section className="content">
+        {activeTab !== "Overview" ? <div className="placeholder-page"><h1>{activeTab}</h1></div> : <>
+        <header>
+          <div><p className="eyebrow">WELCOME BACK</p><h1>Good morning, {portfolio.owner.split(" ")[0]}.</h1><p className="subhead">Here’s how your money is working for you.</p></div>
+          <button className="add-button" type="button" onClick={() => { setFormError(""); setShowAddForm(true); }}>+ Add holdings</button>
+        </header>
+        {showAddForm && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAddForm(false); }}>
+          <section className="add-dialog" role="dialog" aria-modal="true" aria-labelledby="add-title">
+            <div className="panel-title"><div><h2 id="add-title">Add a holding</h2><p>Enter the details of your buy order.</p></div><button type="button" className="dialog-close" aria-label="Close" onClick={() => setShowAddForm(false)}>×</button></div>
+            <form onSubmit={addHolding}>
+              <label>Ticker symbol<input name="symbol" placeholder="e.g. AAPL" required maxLength={10} pattern="[A-Za-z0-9.\-]+" autoFocus /></label>
+              <label>Average buy price<input name="averagePrice" type="number" min="0.01" step="0.01" placeholder="0.00" required /></label>
+              <label>Shares purchased<input name="shares" type="number" min="0.000001" step="any" placeholder="0" required /></label>
+              {formError && <p className="form-error" role="alert">{formError}</p>}
+              <div className="dialog-actions"><button type="button" className="cancel-button" onClick={() => setShowAddForm(false)}>Cancel</button><button type="submit" className="add-button" disabled={isSavingHolding}>{isSavingHolding ? "Saving…" : "Save holding"}</button></div>
+            </form>
+          </section>
+        </div>}
+        <div className="tabs"><button className="selected">{activeTab}</button><span>{quoteStatus} <i/></span></div>
+        <section className="metrics">
+          <MetricCard label="Portfolio value" value={money.format(portfolio.totalValue)} detail={`↑ ${money.format(portfolio.dailyChange)} today`} positive/>
+          <MetricCard label="Total return" value={`+${portfolio.returns}%`} detail="Since inception" positive/>
+          <MetricCard label="Dividend yield" value={`${portfolio.dividendYield}%`} detail="Est. $2,367 / year"/>
+          <MetricCard label="Risk profile" value={portfolio.riskScore} detail="Well balanced"/>
+        </section>
+        <section className="grid-main">
+          <PerformancePanel portfolio={portfolio} range={range} onRangeChange={setRange}/>
+          <AllocationPanel allocation={portfolio.allocation}/>
+        </section>
+        <HoldingsTable holdings={portfolio.holdings} invested={invested}/>
+        </>}
       </section>
-      <section className="grid-main">
-        <article className="panel performance"><div className="panel-title"><div><h2>Portfolio performance</h2><p>{money.format(portfolio.totalValue)} <span className="positive">+{portfolio.dailyChangePercent}%</span></p></div><div className="range-picker">{["1M", "3M", "6M", "1Y", "ALL"].map(item => <button onClick={() => setRange(item)} className={range === item ? "range-active" : ""} key={item}>{item}</button>)}</div></div>
-          <div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={portfolio.chart}><defs><linearGradient id="portfolioFill" x1="0" x2="0" y1="0" y2="1"><stop offset="5%" stopColor="#6d5dfb" stopOpacity={.28}/><stop offset="95%" stopColor="#6d5dfb" stopOpacity={0}/></linearGradient></defs><XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: "#87909e", fontSize: 12 }} dy={12}/><YAxis hide domain={[95000, 135000]}/><Tooltip formatter={(value) => money.format(value)} contentStyle={{ borderRadius: 10, border: "1px solid #e7e8ed" }}/><Area type="monotone" dataKey="value" stroke="#6d5dfb" strokeWidth={3} fill="url(#portfolioFill)"/></AreaChart></ResponsiveContainer></div>
-        </article>
-        <article className="panel allocation"><div className="panel-title"><div><h2>Asset allocation</h2><p>By sector</p></div><button className="dots">•••</button></div><div className="allocation-body"><div className="donut"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={portfolio.allocation} dataKey="value" innerRadius={52} outerRadius={73} paddingAngle={3} stroke="none">{portfolio.allocation.map(slice => <Cell key={slice.name} fill={slice.color}/>)}</Pie></PieChart></ResponsiveContainer><div><strong>100%</strong><span>Invested</span></div></div><div className="legend">{portfolio.allocation.slice(0, 4).map(item => <p key={item.name}><i style={{ background: item.color }}/>{item.name}<b>{item.value}%</b></p>)}</div></div></article>
-      </section>
-      <article className="panel holdings"><div className="panel-title"><div><h2>Top holdings</h2><p>{money.format(invested)} across {portfolio.holdings.length} positions</p></div><button className="view-all">View all holdings →</button></div><div className="holding-head"><span>ASSET</span><span>SHARES</span><span>PRICE</span><span>DAY</span><span>ALLOCATION</span></div>{portfolio.holdings.map((holding, index) => <div className="holding" key={holding.symbol}><div className="asset"><em className={`logo logo-${index}`}>{holding.symbol.slice(0, 1)}</em><div><strong>{holding.symbol}</strong><span>{holding.name}</span></div></div><span>{holding.shares}</span><span>{money.format(holding.price)}</span><span className={holding.change < 0 ? "negative" : "positive"}>{holding.change > 0 ? "+" : ""}{holding.change}%</span><span>{holding.allocation}%</span></div>)}</article>
-    </section>
-  </main>;
+    </main>
+  );
 }
