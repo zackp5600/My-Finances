@@ -3,15 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "node ./node_modules/concurrently/dist/bin/concurrently.js \"node ./node_modules/next/dist/bin/next dev\" \"node --watch server/index.js\"",
+    "dev": "node ./node_modules/concurrently/dist/bin/concurrently.js \"node ./node_modules/next/dist/bin/next dev\" \"node --env-file=.env --watch server/index.js\"",
     "dev:web": "node ./node_modules/next/dist/bin/next dev",
-    "dev:api": "node --watch server/index.js",
+    "dev:api": "node --env-file=.env --watch server/index.js",
     "build": "node ./node_modules/next/dist/bin/next build",
     "start": "node ./node_modules/next/dist/bin/next start"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.2",
+    "mongodb": "^7.6.0",
     "next": "^15.1.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
