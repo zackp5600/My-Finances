@@ -1,14 +1,21 @@
 "use client";
 
-import Link from "next/link";
+import NavigationLink from "./NavigationLink";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Area, AreaChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { usePortfolio } from "./PortfolioProvider";
 
 export const money = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
   maximumFractionDigits: 0
+});
+
+const stockPrice = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
 });
 
 export function Sidebar({ owner }) {
@@ -27,29 +34,28 @@ export function Sidebar({ owner }) {
   }
   const tabs = [
     { label: "Overview", icon: "\u2302", href: "/overview" },
-    { label: "Holdings", icon: "\u25c8", href: "/holdings" },
-    { label: "Activity", icon: "\u2197", href: "/activity" },
-    { label: "Insights", icon: "\u25cc", href: "/insights" }
+    { label: "Budgeting", icon: "\u25c8", href: "/budgeting" },
+    { label: "Goals", icon: "\u25ce", href: "/goals" }
   ];
 
   return (
     <aside className="sidebar">
-      <Link className="brand brand-button" href="/overview" aria-label="Go to Overview"><i>{"\u2726"}</i><span>My Finances</span></Link>
+      <NavigationLink className="brand brand-button" href="/overview" aria-label="Go to Overview"><i>{"\u2726"}</i><span>My Finances</span></NavigationLink>
       <nav>
         {tabs.map(({ label, icon, href }) => (
-          <Link key={label} href={href} className={pathname === href ? "active" : ""}>
+          <NavigationLink key={label} href={href} className={pathname === href ? "active" : ""} aria-current={pathname === href ? "page" : undefined}>
             <b>{icon}</b>{label}
-          </Link>
+          </NavigationLink>
         ))}
       </nav>
-      <button className="theme-toggle" type="button" onClick={toggleDarkMode} aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"} title={darkMode ? "Light mode" : "Dark mode"} aria-pressed={darkMode}>
-        <b>{darkMode ? "☀" : "☾"}</b>
-      </button>
       <div className="sidebar-bottom">
         <div className="avatar">{owner.split(" ").map((part) => part[0]).join("").slice(0, 2)}</div>
         <div><strong>{owner}</strong><small>Individual account</small></div>
         <span>{"\u2304"}</span>
       </div>
+      <button className="theme-toggle" type="button" onClick={toggleDarkMode} aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"} title={darkMode ? "Light mode" : "Dark mode"} aria-pressed={darkMode}>
+        <b>{darkMode ? "☀" : "☾"}</b>
+      </button>
     </aside>
   );
 }
@@ -63,64 +69,58 @@ export function MetricCard({ label, value, detail, positive }) {
   );
 }
 
-export function PerformancePanel({ portfolio, range, onRangeChange }) {
-  const ranges = ["1M", "3M", "6M", "1Y", "ALL"];
+export function HoldingsTable({ holdings, invested, showAll = false }) {
+  const { updateShares } = usePortfolio();
+  const [editing, setEditing] = useState(null);
+  const [formError, setFormError] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+
+  async function saveShares(event) {
+    event.preventDefault();
+    if (isSaving) return;
+    const rawShares = new FormData(event.currentTarget).get("shares");
+    const shares = Number(rawShares);
+    if (!String(rawShares).trim() || !Number.isFinite(shares) || shares < 0) {
+      setFormError("Enter a valid share count of zero or more.");
+      return;
+    }
+    setFormError("");
+    setIsSaving(true);
+    try {
+      await updateShares(editing.symbol, shares);
+      setEditing(null);
+    } catch (error) {
+      setFormError(error instanceof TypeError ? "Could not reach the server. Please try again." : error.message);
+    } finally {
+      setIsSaving(false);
+    }
+  }
 
   return (
-    <article className="panel performance">
-      <div className="panel-title">
-        <div><h2>Portfolio performance</h2><p>{money.format(portfolio.totalValue)} <span className="positive">+{portfolio.dailyChangePercent}%</span></p></div>
-        <div className="range-picker">
-          {ranges.map((item) => (
-            <button onClick={() => onRangeChange(item)} className={range === item ? "range-active" : ""} key={item}>{item}</button>
-          ))}
-        </div>
-      </div>
-      <div className="chart">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={portfolio.chart}>
-            <defs><linearGradient id="portfolioFill" x1="0" x2="0" y1="0" y2="1"><stop offset="5%" stopColor="#6d5dfb" stopOpacity={.28}/><stop offset="95%" stopColor="#6d5dfb" stopOpacity={0}/></linearGradient></defs>
-            <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: "#87909e", fontSize: 12 }} dy={12}/>
-            <YAxis hide domain={[95000, 135000]}/>
-            <Tooltip formatter={(value) => money.format(value)} contentStyle={{ borderRadius: 10, border: "1px solid #e7e8ed" }}/>
-            <Area type="monotone" dataKey="value" stroke="#6d5dfb" strokeWidth={3} fill="url(#portfolioFill)"/>
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
-    </article>
-  );
-}
-
-export function AllocationPanel({ allocation }) {
-  return (
-    <article className="panel allocation">
-      <div className="panel-title"><div><h2>Asset allocation</h2><p>By sector</p></div><button className="dots" aria-label="More allocation options">•••</button></div>
-      <div className="allocation-body">
-        <div className="donut">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart><Pie data={allocation} dataKey="value" innerRadius={52} outerRadius={73} paddingAngle={3} stroke="none">{allocation.map((slice) => <Cell key={slice.name} fill={slice.color}/>)}</Pie></PieChart>
-          </ResponsiveContainer>
-          <div><strong>100%</strong><span>Invested</span></div>
-        </div>
-        <div className="legend">{allocation.slice(0, 4).map((item) => <p key={item.name}><i style={{ background: item.color }}/>{item.name}<b>{item.value}%</b></p>)}</div>
-      </div>
-    </article>
-  );
-}
-
-export function HoldingsTable({ holdings, invested }) {
-  return (
+    <>
     <article className="panel holdings">
-      <div className="panel-title"><div><h2>Top holdings</h2><p>{money.format(invested)} across {holdings.length} positions</p></div><button className="view-all">View all holdings {"\u2192"}</button></div>
+      <div className="panel-title"><div><h2>{showAll ? "All holdings" : "Top holdings"}</h2><p>{money.format(invested)} across {holdings.length} positions</p></div>{!showAll && <NavigationLink href="/holdings" className="view-all">View all holdings {"\u2192"}</NavigationLink>}</div>
       <div className="holding-head"><span>ASSET</span><span>SHARES</span><span>LIVE PRICE</span><span>DAY</span><span>ALLOCATION</span></div>
       {holdings.map((holding, index) => (
         <div className="holding" key={holding.symbol}>
           <div className="asset"><em className={`logo logo-${index}`}>{holding.symbol.slice(0, 1)}</em><div><strong>{holding.symbol}</strong><span>{holding.name}</span></div></div>
-          <span>{holding.shares}</span><span className="holding-price"><strong>{money.format(holding.price)}</strong><small>Avg. {money.format(holding.averagePrice ?? holding.price)}</small></span>
+          <span className="holding-shares">{holding.shares}<button type="button" className="edit-shares" aria-label={`Edit shares for ${holding.symbol}`} onClick={() => { setFormError(""); setEditing(holding); }}>Edit</button></span><span className="holding-price"><strong>{stockPrice.format(holding.price)}</strong><small>Avg. {stockPrice.format(holding.averagePrice ?? holding.price)}</small></span>
           <span className={holding.change < 0 ? "negative" : "positive"}>{holding.change > 0 ? "+" : ""}{holding.change}%</span>
           <span>{holding.allocation}%</span>
         </div>
       ))}
+      {!holdings.length && <p className="subhead">No holdings yet. Add a stock from Overview to get started.</p>}
     </article>
+    {editing && <div className="modal-backdrop" onMouseDown={(event) => { if (!isSaving && event.target === event.currentTarget) setEditing(null); }}>
+      <section className="add-dialog" role="dialog" aria-modal="true" aria-labelledby="edit-shares-title" onKeyDown={(event) => { if (event.key === "Escape" && !isSaving) setEditing(null); }}>
+        <div className="panel-title"><div><h2 id="edit-shares-title">Edit {editing.symbol} shares</h2><p>Enter the total number of shares you own.</p></div><button type="button" className="dialog-close" aria-label="Close" disabled={isSaving} onClick={() => setEditing(null)}>{"\u00d7"}</button></div>
+        <form onSubmit={saveShares}>
+          <label>Shares owned<input name="shares" type="number" min="0" step="any" defaultValue={editing.shares} required autoFocus disabled={isSaving} /></label>
+          {formError && <p className="form-error" role="alert">{formError}</p>}
+          <div className="dialog-actions"><button type="button" className="cancel-button" disabled={isSaving} onClick={() => setEditing(null)}>Cancel</button><button type="submit" className="add-button" disabled={isSaving}>{isSaving ? "Saving…" : "Save shares"}</button></div>
+        </form>
+      </section>
+    </div>}
+    </>
   );
 }
